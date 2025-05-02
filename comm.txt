@@ -1,0 +1,437 @@
+1.Book.kt
+package com.example.libraryapp
+
+data class Book(
+    val id: Long = 0,       // Unique identifier
+    val title: String,
+    val author: String,
+    val latitude: Double,
+    val longitude: Double
+)
+
+2.DatabaseHelper
+package com.example.libraryapp
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+
+class DatabaseHelper(context: Context)
+    : SQLiteOpenHelper(context, DB_NAME, null, DB_VERSION) {
+
+    companion object {
+        private const val DB_NAME       = "Library.db"
+        private const val DB_VERSION    = 1
+        private const val TABLE_BOOKS   = "books"
+        private const val COL_ID        = "id"
+        private const val COL_TITLE     = "title"
+        private const val COL_AUTHOR    = "author"
+        private const val COL_LATITUDE  = "latitude"
+        private const val COL_LONGITUDE = "longitude"
+    }
+
+    override fun onCreate(db: SQLiteDatabase) {
+        val createTable = """
+            CREATE TABLE $TABLE_BOOKS (
+                $COL_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COL_TITLE TEXT NOT NULL,
+                $COL_AUTHOR TEXT NOT NULL,
+                $COL_LATITUDE REAL,
+                $COL_LONGITUDE REAL
+            )
+        """.trimIndent()
+        db.execSQL(createTable)
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_BOOKS")
+        onCreate(db)
+    }
+
+    fun addBook(book: Book): Boolean {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put(COL_TITLE, book.title)
+            put(COL_AUTHOR, book.author)
+            put(COL_LATITUDE, book.latitude)
+            put(COL_LONGITUDE, book.longitude)
+        }
+        val result = db.insert(TABLE_BOOKS, null, values)
+        db.close()
+        return (result != -1L)
+    }
+
+    fun getAllBooks(): ArrayList<Book> {
+        val list = ArrayList<Book>()
+        val db = readableDatabase
+        val cursor = db.rawQuery("SELECT * FROM $TABLE_BOOKS", null)
+
+        if (cursor.moveToFirst()) {
+            do {
+                list += Book(
+                    id        = cursor.getLong(cursor.getColumnIndexOrThrow(COL_ID)),
+                    title     = cursor.getString(cursor.getColumnIndexOrThrow(COL_TITLE)),
+                    author    = cursor.getString(cursor.getColumnIndexOrThrow(COL_AUTHOR)),
+                    latitude  = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LATITUDE)),
+                    longitude = cursor.getDouble(cursor.getColumnIndexOrThrow(COL_LONGITUDE))
+                )
+            } while (cursor.moveToNext())
+        }
+        cursor.close()
+        db.close()
+        return list
+    }
+
+    fun updateBook(book: Book): Boolean {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put(COL_TITLE, book.title)
+            put(COL_AUTHOR, book.author)
+            put(COL_LATITUDE, book.latitude)
+            put(COL_LONGITUDE, book.longitude)
+        }
+        val rows = db.update(
+            TABLE_BOOKS,
+            values,
+            "$COL_ID = ?",
+            arrayOf(book.id.toString())
+        )
+        db.close()
+        return rows > 0
+    }
+
+    fun deleteBook(id: Long): Boolean {
+        val db = writableDatabase
+        val rows = db.delete(
+            TABLE_BOOKS,
+            "$COL_ID = ?",
+            arrayOf(id.toString())
+        )
+        db.close()
+        return rows > 0
+    }
+}
+
+3.MainActivity
+package com.example.libraryapp
+
+import android.content.Context
+import android.content.SharedPreferences
+import android.location.Geocoder
+import android.os.Bundle
+import android.view.ContextMenu
+import android.view.MenuItem
+import android.view.View
+import android.widget.*
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import java.util.*
+
+class MainActivity : AppCompatActivity() {
+
+    private var latitude: Double = 0.0
+    private var longitude: Double = 0.0
+
+    private lateinit var dbHelper: DatabaseHelper
+    private lateinit var listView: ListView
+    private lateinit var bookList: ArrayList<Book>
+    private lateinit var sharedPreferences: SharedPreferences
+    private lateinit var borrowedBookText: TextView
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        // Initialize views
+        dbHelper = DatabaseHelper(this)
+        listView = findViewById(R.id.listViewBooks)
+        borrowedBookText = findViewById(R.id.textViewBorrowed)
+        sharedPreferences = getSharedPreferences("BorrowedBookPref", Context.MODE_PRIVATE)
+
+        val addButton = findViewById<Button>(R.id.buttonAddBook)
+        val borrowButton = findViewById<Button>(R.id.buttonBorrowBook)
+
+        loadBooks()
+        loadBorrowedBook()
+
+        addButton.setOnClickListener { showAddBookDialog() }
+        borrowButton.setOnClickListener { saveBorrowedBook() }
+
+        registerForContextMenu(listView)
+        listView.setOnItemClickListener { _, _, pos, _ ->
+            Toast.makeText(this, "Selected: ${bookList[pos].title}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun loadBooks() {
+        bookList = dbHelper.getAllBooks()
+        val titles = bookList.map {
+            "${it.title} by ${it.author}\nLat: ${it.latitude}, Lon: ${it.longitude}"
+        }
+        listView.adapter = ArrayAdapter(this,
+            android.R.layout.simple_list_item_1,
+            titles
+        )
+    }
+
+    private fun showAddBookDialog() {
+        val view = layoutInflater.inflate(R.layout.dialog_edit_book, null)
+        val titleIn = view.findViewById<EditText>(R.id.editTitle)
+        val authorIn = view.findViewById<EditText>(R.id.editAuthor)
+        val addressIn = view.findViewById<EditText>(R.id.editAddress)
+
+        AlertDialog.Builder(this)
+            .setTitle("Add New Book")
+            .setView(view)
+            .setPositiveButton("Add") { _, _ ->
+                val title = titleIn.text.toString().trim()
+                val author = authorIn.text.toString().trim()
+                val address = addressIn.text.toString().trim()
+
+                if (title.isEmpty() || author.isEmpty() || address.isEmpty()) {
+                    Toast.makeText(this, "Enter all fields", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                // Geocode address
+                val geocoder = Geocoder(this, Locale.getDefault())
+                try {
+                    val results = geocoder.getFromLocationName(address, 1)
+                    if (results.isNullOrEmpty()) {
+                        Toast.makeText(this, "Invalid Address", Toast.LENGTH_SHORT).show()
+                        return@setPositiveButton
+                    }
+                    // Save into class vars
+                    latitude = results[0].latitude
+                    longitude = results[0].longitude
+
+                    // Add to database
+                    val book = Book(
+                        title = title,
+                        author = author,
+                        latitude = latitude,
+                        longitude = longitude
+                    )
+                    if (dbHelper.addBook(book)) {
+                        Toast.makeText(this, "Book Added", Toast.LENGTH_SHORT).show()
+                        loadBooks()
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    Toast.makeText(this, "Error geocoding", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun loadBorrowedBook() {
+        val last = sharedPreferences.getString("borrowedBook", "None")
+        borrowedBookText.text = "Last Borrowed Book: $last"
+    }
+
+    private fun saveBorrowedBook() {
+        if (bookList.isEmpty()) {
+            Toast.makeText(this, "No books to borrow!", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val latest = bookList.last().title
+        sharedPreferences
+            .edit()
+            .putString("borrowedBook", latest)
+            .apply()
+        loadBorrowedBook()
+        Toast.makeText(this, "Borrowed: $latest", Toast.LENGTH_SHORT).show()
+    }
+
+    // Context menu for Edit / Delete
+    override fun onCreateContextMenu(
+        menu: ContextMenu, v: View, menuInfo: ContextMenu.ContextMenuInfo
+    ) {
+        super.onCreateContextMenu(menu, v, menuInfo)
+        menu.setHeaderTitle("Choose Option")
+        menu.add(0, v.id, 0, "Edit Book")
+        menu.add(0, v.id, 1, "Delete Book")
+    }
+
+    override fun onContextItemSelected(item: MenuItem): Boolean {
+        val info = item.menuInfo as AdapterView.AdapterContextMenuInfo
+        val selected = bookList[info.position]
+
+        return when (item.order) {
+            0 -> { showEditBookDialog(selected); true }
+            1 -> {
+                dbHelper.deleteBook(selected.id)
+                Toast.makeText(this, "Book Deleted", Toast.LENGTH_SHORT).show()
+                loadBooks()
+                true
+            }
+            else -> super.onContextItemSelected(item)
+        }
+    }
+
+    private fun showEditBookDialog(book: Book) {
+        val view = layoutInflater.inflate(R.layout.dialog_edit_book, null)
+        val titleIn = view.findViewById<EditText>(R.id.editTitle)
+        val authorIn = view.findViewById<EditText>(R.id.editAuthor)
+        val addressIn = view.findViewById<EditText>(R.id.editAddress)
+
+        titleIn.setText(book.title)
+        authorIn.setText(book.author)
+
+        AlertDialog.Builder(this)
+            .setTitle("Edit Book")
+            .setView(view)
+            .setPositiveButton("Update") { _, _ ->
+                val newTitle = titleIn.text.toString().trim()
+                val newAuthor = authorIn.text.toString().trim()
+                val newAddr = addressIn.text.toString().trim()
+
+                if (newTitle.isEmpty() || newAuthor.isEmpty()) {
+                    Toast.makeText(this, "Title & Author are required", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                // Default to existing coords
+                var lat = book.latitude
+                var lon = book.longitude
+
+                if (newAddr.isNotEmpty()) {
+                    try {
+                        val results = Geocoder(this, Locale.getDefault())
+                            .getFromLocationName(newAddr, 1)
+                        if (!results.isNullOrEmpty()) {
+                            lat = results[0].latitude
+                            lon = results[0].longitude
+                        }
+                    } catch (_: Exception) { /* ignore geocode errors */ }
+                }
+
+                val updated = Book(
+                    id = book.id,
+                    title = newTitle,
+                    author = newAuthor,
+                    latitude = lat,
+                    longitude = lon
+                )
+                dbHelper.updateBook(updated)
+                loadBooks()
+                Toast.makeText(this, "Book Updated", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+}
+
+4.activity_main.xml
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp">
+
+    <ListView
+        android:id="@+id/listViewBooks"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_above="@id/buttonAddBook"
+        android:layout_alignParentTop="true"/>
+
+    <TextView
+        android:id="@+id/textViewBorrowed"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Last Borrowed Book: None"
+        android:layout_above="@id/listViewBooks"
+        android:layout_marginBottom="8dp"
+        android:layout_centerHorizontal="true" />
+
+    <Button
+        android:id="@+id/buttonAddBook"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Add Book"
+        android:layout_alignParentBottom="true"
+        android:layout_alignParentStart="true"/>
+
+    <Button
+        android:id="@+id/buttonBorrowBook"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Borrow Book"
+        android:layout_alignParentBottom="true"
+        android:layout_alignParentEnd="true"/>
+
+</RelativeLayout>
+
+5.dialog_edit_book.xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:padding="20dp"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <EditText
+        android:id="@+id/editTitle"
+        android:hint="Enter Title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <EditText
+        android:id="@+id/editAuthor"
+        android:hint="Enter Author"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp" />
+
+    <EditText
+        android:id="@+id/editAddress"
+        android:hint="Enter Address"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp" />
+</LinearLayout>
+
+6.
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    package="com.example.libraryapp">
+
+    <!-- Permission for accessing Internet (optional if Geocoder uses online service) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Permission for accessing location for Geocoder -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Libraryapp"
+        tools:targetApi="31">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+    </application>
+
+</manifest>
+
+
