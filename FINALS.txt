@@ -1,0 +1,712 @@
+-----BookingManagerActivity
+package com.example.hostelbooking
+
+import android.os.Bundle
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+
+class BookingManagerActivity : AppCompatActivity() {
+
+    private lateinit var dbHelper: CheckoutDatabaseHelper
+    private lateinit var listView: ListView
+    private lateinit var roomInput: EditText
+    private lateinit var latInput: EditText
+    private lateinit var lngInput: EditText
+    private lateinit var idInput: EditText
+    private lateinit var adapter: ArrayAdapter<Checkout>
+    private var selectedCheckout: Checkout? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_booking_manager)
+
+        dbHelper = CheckoutDatabaseHelper(this)
+        listView = findViewById(R.id.bookingList)
+        roomInput = findViewById(R.id.roomInput)
+        latInput  = findViewById(R.id.latInput)
+        lngInput  = findViewById(R.id.lngInput)
+        idInput   = findViewById(R.id.idInput)
+
+        // Use ArrayAdapter<Checkout>
+        adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf())
+        listView.adapter = adapter
+
+        // When you tap an item, populate the fields:
+        listView.setOnItemClickListener { _, _, pos, _ ->
+            selectedCheckout = adapter.getItem(pos)
+            selectedCheckout?.let {
+                idInput.setText(it.id.toString())
+                roomInput.setText(it.room)
+                latInput.setText(it.lat.toString())
+                lngInput.setText(it.lng.toString())
+            }
+        }
+
+        // Add
+        findViewById<Button>(R.id.addButton).setOnClickListener {
+            val room = roomInput.text.toString().trim()
+            val lat  = latInput.text.toString().toDoubleOrNull()
+            val lng  = lngInput.text.toString().toDoubleOrNull()
+            if (room.isNotEmpty() && lat != null && lng != null) {
+                if (dbHelper.insertCheckout(room, lat, lng)) {
+                    toast("Added successfully")
+                    refreshList()
+                }
+            } else toast("Fill all fields")
+        }
+
+        // Update
+        findViewById<Button>(R.id.updateButton).setOnClickListener {
+            val sc = selectedCheckout
+            val room = roomInput.text.toString().trim()
+            val lat  = latInput.text.toString().toDoubleOrNull()
+            val lng  = lngInput.text.toString().toDoubleOrNull()
+            if (sc != null && room.isNotEmpty() && lat != null && lng != null) {
+                if (dbHelper.updateCheckout(sc.id, room, lat, lng)) {
+                    toast("Updated successfully")
+                    refreshList()
+                }
+            } else toast("Select item and fill fields")
+        }
+
+        // Delete
+        findViewById<Button>(R.id.deleteButton).setOnClickListener {
+            val sc = selectedCheckout
+            if (sc != null) {
+                if (dbHelper.deleteCheckout(sc.id)) {
+                    toast("Deleted successfully")
+                    refreshList()
+                }
+            } else toast("Select item to delete")
+        }
+
+        // Load initial data
+        refreshList()
+    }
+
+    private fun refreshList() {
+        val data = dbHelper.getAllCheckouts()
+        adapter.clear()
+        adapter.addAll(data)
+        adapter.notifyDataSetChanged()
+        selectedCheckout = null
+        idInput.text.clear()
+        roomInput.text.clear()
+        latInput.text.clear()
+        lngInput.text.clear()
+    }
+
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+}
+
+
+------Checkout
+package com.example.hostelbooking
+
+data class Checkout(
+    val id: Int,
+    val room: String,
+    val lat: Double,
+    val lng: Double
+) {
+    override fun toString(): String {
+        return "ID:$id  $room\nLat:${"%.4f".format(lat)}, Lng:${"%.4f".format(lng)}"
+    }
+}
+
+
+-------------CheckoutDatabaseHelper
+package com.example.hostelbooking
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+
+class CheckoutDatabaseHelper(context: Context) :
+    SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
+
+    companion object {
+        private const val DATABASE_NAME = "hostel_booking.db"
+        private const val DATABASE_VERSION = 1
+        const val TABLE_NAME = "checkouts"
+        const val COLUMN_ID = "id"
+        const val COLUMN_ROOM = "room"
+        const val COLUMN_LATITUDE = "latitude"
+        const val COLUMN_LONGITUDE = "longitude"
+    }
+
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE $TABLE_NAME (
+              $COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+              $COLUMN_ROOM TEXT NOT NULL,
+              $COLUMN_LATITUDE REAL NOT NULL,
+              $COLUMN_LONGITUDE REAL NOT NULL
+            );
+        """.trimIndent())
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_NAME")
+        onCreate(db)
+    }
+
+    fun insertCheckout(room: String, lat: Double, lng: Double): Boolean {
+        writableDatabase.use { db ->
+            val values = ContentValues().apply {
+                put(COLUMN_ROOM, room)
+                put(COLUMN_LATITUDE, lat)
+                put(COLUMN_LONGITUDE, lng)
+            }
+            return db.insert(TABLE_NAME, null, values) != -1L
+        }
+    }
+
+    fun updateCheckout(id: Int, room: String, lat: Double, lng: Double): Boolean {
+        writableDatabase.use { db ->
+            val values = ContentValues().apply {
+                put(COLUMN_ROOM, room)
+                put(COLUMN_LATITUDE, lat)
+                put(COLUMN_LONGITUDE, lng)
+            }
+            return db.update(TABLE_NAME, values, "$COLUMN_ID=?", arrayOf(id.toString())) > 0
+        }
+    }
+
+    fun deleteCheckout(id: Int): Boolean {
+        writableDatabase.use { db ->
+            return db.delete(TABLE_NAME, "$COLUMN_ID=?", arrayOf(id.toString())) > 0
+        }
+    }
+
+    fun getAllCheckouts(): List<Checkout> {
+        val list = mutableListOf<Checkout>()
+        readableDatabase.use { db ->
+            val cursor = db.rawQuery(
+                "SELECT $COLUMN_ID, $COLUMN_ROOM, $COLUMN_LATITUDE, $COLUMN_LONGITUDE FROM $TABLE_NAME",
+                null
+            )
+            cursor.use { cur ->
+                while (cur.moveToNext()) {
+                    val id   = cur.getInt(cur.getColumnIndexOrThrow(COLUMN_ID))
+                    val room = cur.getString(cur.getColumnIndexOrThrow(COLUMN_ROOM))
+                    val lat  = cur.getDouble(cur.getColumnIndexOrThrow(COLUMN_LATITUDE))
+                    val lng  = cur.getDouble(cur.getColumnIndexOrThrow(COLUMN_LONGITUDE))
+                    list += Checkout(id, room, lat, lng)
+                }
+            }
+        }
+        return list
+    }
+}
+
+
+----------------FoodActivity
+package com.example.hostelbooking
+
+import android.os.Bundle
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+
+class FoodActivity : AppCompatActivity() {
+
+    private lateinit var dbHelper: FoodDatabaseHelper
+    private lateinit var listView: ListView
+    private lateinit var input: EditText
+    private lateinit var addBtn: Button
+    private lateinit var updateBtn: Button
+    private lateinit var deleteBtn: Button
+
+    private lateinit var adapter: ArrayAdapter<String>
+    private var foodList = mutableListOf<String>()
+    private var selectedFood: String? = null  // holds the tapped item
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_food)
+
+        // 1) Bind views
+        input     = findViewById(R.id.foodInput)
+        addBtn    = findViewById(R.id.addFoodButton)
+        updateBtn = findViewById(R.id.updateFoodButton)
+        deleteBtn = findViewById(R.id.deleteFoodButton)
+        listView  = findViewById(R.id.foodListView)
+
+        // 2) Init DB helper & load data
+        dbHelper = FoodDatabaseHelper(this)
+        refreshFoodList()
+
+        // 3) Adapter
+        adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, foodList)
+        listView.adapter = adapter
+
+        // 4) Keep track of selection
+        listView.setOnItemClickListener { _, _, pos, _ ->
+            selectedFood = foodList[pos]
+            input.setText(selectedFood)
+        }
+
+        // 5) Add new item
+        addBtn.setOnClickListener {
+            val newFood = input.text.toString().trim()
+            if (newFood.isNotEmpty()) {
+                dbHelper.addFoodItem(newFood)
+                toast("Added: $newFood")
+                input.text.clear()
+                refreshFoodList()
+            } else {
+                toast("Enter a non-empty food name")
+            }
+        }
+
+        // 6) Update tapped item
+        updateBtn.setOnClickListener {
+            val oldFood = selectedFood
+            val newFood = input.text.toString().trim()
+            if (oldFood != null && newFood.isNotEmpty()) {
+                dbHelper.updateFoodItem(oldFood, newFood)
+                toast("Updated “$oldFood” → “$newFood”")
+                input.text.clear()
+                selectedFood = null
+                refreshFoodList()
+            } else {
+                toast("Tap an item to edit, then enter new text")
+            }
+        }
+
+        // 7) Delete tapped item
+        deleteBtn.setOnClickListener {
+            selectedFood?.let {
+                dbHelper.deleteFoodItem(it)
+                toast("Deleted: $it")
+                input.text.clear()
+                selectedFood = null
+                refreshFoodList()
+            } ?: toast("Tap an item to delete it")
+        }
+    }
+
+    private fun refreshFoodList() {
+        foodList.clear()
+        foodList.addAll(dbHelper.loadFoodItems())
+        if (::adapter.isInitialized) adapter.notifyDataSetChanged()
+    }
+
+    private fun toast(msg: String) =
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+}
+
+
+------------FoodDatabaseHelper
+package com.example.hostelbooking
+
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import android.util.Log
+
+
+class FoodDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
+
+    companion object {
+        private const val DATABASE_NAME = "food.db"
+        private const val DATABASE_VERSION = 1
+        private const val TABLE_FOOD = "food"
+        private const val COLUMN_ID = "id"
+        private const val COLUMN_FOOD_NAME = "food_name"
+    }
+
+    override fun onCreate(db: SQLiteDatabase) {
+        val createTableSQL = """
+            CREATE TABLE $TABLE_FOOD (
+                $COLUMN_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COLUMN_FOOD_NAME TEXT NOT NULL
+            )
+        """
+        db.execSQL(createTableSQL)
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        db.execSQL("DROP TABLE IF EXISTS $TABLE_FOOD")
+        onCreate(db)
+    }
+
+    // Add food item to the database
+    fun addFoodItem(foodName: String) {
+        val db = writableDatabase
+        val insertSQL = "INSERT INTO $TABLE_FOOD ($COLUMN_FOOD_NAME) VALUES ('$foodName')"
+        db.execSQL(insertSQL)
+    }
+
+    // Update food item in the database
+    fun updateFoodItem(oldName: String, newName: String) {
+        val db = writableDatabase
+        val updateSQL = "UPDATE $TABLE_FOOD SET $COLUMN_FOOD_NAME = '$newName' WHERE $COLUMN_FOOD_NAME = '$oldName'"
+        db.execSQL(updateSQL)
+    }
+
+    // Delete food item from the database
+    fun deleteFoodItem(foodName: String) {
+        val db = writableDatabase
+        val deleteSQL = "DELETE FROM $TABLE_FOOD WHERE $COLUMN_FOOD_NAME = '$foodName'"
+        db.execSQL(deleteSQL)
+    }
+
+    // Load food items from the database
+    fun loadFoodItems(): MutableList<String> {
+        val foodList = mutableListOf<String>()
+        val db = readableDatabase
+        val cursor = db.rawQuery("SELECT * FROM $TABLE_FOOD", null)
+
+        // Ensure the column index is valid
+        val foodNameColumnIndex = cursor.getColumnIndex(COLUMN_FOOD_NAME)
+
+        if (foodNameColumnIndex != -1) {
+            while (cursor.moveToNext()) {
+                val foodName = cursor.getString(foodNameColumnIndex)
+                foodList.add(foodName)
+            }
+        } else {
+            // Log an error if column index is -1 (column not found)
+            Log.e("FoodDatabaseHelper", "Column '$COLUMN_FOOD_NAME' not found.")
+        }
+
+        cursor.close()
+        return foodList
+    }
+}
+
+---------
+----------------MainActivity
+package com.example.hostelbooking
+
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.os.Build
+import android.os.Bundle
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import java.util.*
+
+class MainActivity : AppCompatActivity() {
+    private val CHANNEL_ID = "booking_notification"
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        // Room list & notification
+        val rooms = listOf("Single Room", "Double Room", "Deluxe Room", "Suite")
+        val lv: ListView = findViewById(R.id.roomListView)
+        lv.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, rooms)
+        createNotificationChannel()
+        lv.setOnItemClickListener { _, _, pos, _ ->
+            sendBookingNotification("Thanks for booking a ${rooms[pos]}")
+        }
+
+        // Geocoder UI
+        val addressInput: EditText = findViewById(R.id.addressInput)
+        val btnGeo: Button        = findViewById(R.id.getCoordinatesButton)
+        val latText: TextView     = findViewById(R.id.latText)
+        val lngText: TextView     = findViewById(R.id.lngText)
+
+        btnGeo.setOnClickListener {
+            val addr = addressInput.text.toString().trim()
+            if (addr.isEmpty()) {
+                Toast.makeText(this, "Enter address", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                ActivityCompat.requestPermissions(
+                    this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 1
+                )
+                return@setOnClickListener
+            }
+            val geo = Geocoder(this, Locale.getDefault())
+            val res = geo.getFromLocationName(addr, 1)
+            if (!res.isNullOrEmpty()) {
+                latText.text = "Latitude: ${res[0].latitude}"
+                lngText.text = "Longitude: ${res[0].longitude}"
+            } else {
+                Toast.makeText(this, "Location not found", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // Navigate to FoodActivity
+        findViewById<Button>(R.id.gotoFoodButton).setOnClickListener {
+            startActivity(Intent(this, FoodActivity::class.java))
+        }
+    }
+
+    private fun sendBookingNotification(msg: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2
+            )
+            return
+        }
+        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("Room Booking")
+            .setContentText(msg)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        NotificationManagerCompat.from(this).notify(101, notif)
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ch = android.app.NotificationChannel(
+                CHANNEL_ID, "Booking Channel",
+                android.app.NotificationManager.IMPORTANCE_HIGH
+            ).apply { description = "Room booking notifications" }
+            (getSystemService(android.app.NotificationManager::class.java))
+                .createNotificationChannel(ch)
+        }
+    }
+}
+
+
+-----activity_booking_manager.xml
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:gravity="center_horizontal">
+
+        <EditText
+            android:id="@+id/roomInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Room Type" />
+
+        <EditText
+            android:id="@+id/latInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Latitude"
+            android:inputType="numberDecimal"
+            android:layout_marginTop="8dp"/>
+
+        <EditText
+            android:id="@+id/lngInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Longitude"
+            android:inputType="numberDecimal"
+            android:layout_marginTop="8dp"/>
+
+        <EditText
+            android:id="@+id/idInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="ID (select from list)"
+            android:inputType="number"
+            android:layout_marginTop="8dp"/>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginTop="16dp">
+
+            <Button
+                android:id="@+id/addButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Add" />
+
+            <Button
+                android:id="@+id/updateButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Update"
+                android:layout_marginStart="8dp" />
+
+            <Button
+                android:id="@+id/deleteButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Delete"
+                android:layout_marginStart="8dp" />
+        </LinearLayout>
+
+        <ListView
+            android:id="@+id/bookingList"
+            android:layout_width="match_parent"
+            android:layout_height="300dp"
+            android:layout_marginTop="16dp"/>
+    </LinearLayout>
+</ScrollView>
+
+
+-------------activity_food.xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/foodLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center_horizontal"
+    android:padding="24dp">
+
+    <!-- Title -->
+    <TextView
+        android:id="@+id/foodTitle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Food Preferences"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="16dp" />
+
+    <!-- Input for a new food choice -->
+    <EditText
+        android:id="@+id/foodInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Enter food choice"
+        android:inputType="text"
+        android:layout_marginBottom="12dp" />
+
+    <!-- Buttons for add, update, delete -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        android:layout_marginBottom="16dp">
+
+        <Button
+            android:id="@+id/addFoodButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Add" />
+
+        <Button
+            android:id="@+id/updateFoodButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Update"
+            android:layout_marginStart="8dp" />
+
+        <Button
+            android:id="@+id/deleteFoodButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Delete"
+            android:layout_marginStart="8dp" />
+    </LinearLayout>
+
+    <!-- List of stored food choices -->
+    <ListView
+        android:id="@+id/foodListView"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:divider="@android:color/darker_gray"
+        android:dividerHeight="1dp" />
+</LinearLayout>
+
+
+---------------activity_main.xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:gravity="center_horizontal">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Available Rooms"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="8dp" />
+
+    <ListView
+        android:id="@+id/roomListView"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:divider="@android:color/darker_gray"
+        android:dividerHeight="1dp"
+        android:layout_marginBottom="16dp" />
+
+    <EditText
+        android:id="@+id/addressInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Enter address" />
+
+    <Button
+        android:id="@+id/getCoordinatesButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Get Coordinates"
+        android:layout_marginTop="8dp" />
+
+    <TextView
+        android:id="@+id/latText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Latitude:"
+        android:layout_marginTop="8dp" />
+
+    <TextView
+        android:id="@+id/lngText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Longitude:"
+        android:layout_marginTop="4dp" />
+
+    <Button
+        android:id="@+id/gotoFoodButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Manage Food"
+        android:layout_marginTop="16dp" />
+</LinearLayout>
+
+-----------colors.xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#6200EE</color>
+    <color name="colorPrimaryDark">#3700B3</color>
+    <color name="colorAccent">#03DAC5</color>
+</resources>
+
+
+---------styles.xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Base application theme -->
+    <style name="Theme.HostelBooking" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Customize your theme here -->
+        <item name="colorPrimary">@color/colorPrimary</item>
+        <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
+        <item name="colorAccent">@color/colorAccent</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+
+</resources>
